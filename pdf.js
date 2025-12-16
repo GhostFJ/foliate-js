@@ -1,4 +1,7 @@
-const pdfjsPath = path => new URL(`vendor/pdfjs/${path}`, import.meta.url).toString()
+const pdfjsPath = path => {
+    const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+    return `${basePath}/foliate-js/vendor/pdfjs/${path}`;
+}
 
 import './vendor/pdfjs/pdf.mjs'
 const pdfjsLib = globalThis.pdfjsLib
@@ -60,7 +63,7 @@ const render = async (page, doc, zoom) => {
     await new pdfjsLib.AnnotationLayer({ page, viewport, div }).render({
         annotations: await page.getAnnotations(),
         linkService: {
-            goToDestination: () => {},
+            goToDestination: () => { },
             getDestinationHash: dest => JSON.stringify(dest),
             addLinkAttributes: (link, url) => link.href = url,
         },
