@@ -636,7 +636,11 @@ export class MOBI extends PDB {
             : exth?.thumbnailOffset < 0xffffffff ? exth?.thumbnailOffset : null
         if (offset != null) {
             const buf = await this.loadResource(offset)
-            return new Blob([buf])
+            let type = 'image/jpeg'
+            if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) type = 'image/png'
+            else if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) type = 'image/gif'
+            else if (buf[0] === 0xff && buf[1] === 0xd8) type = 'image/jpeg'
+            return new Blob([buf], { type })
         }
     }
 }

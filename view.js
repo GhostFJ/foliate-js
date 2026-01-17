@@ -27,7 +27,7 @@ const isFBZ = ({ name, type }) =>
     type === 'application/x-zip-compressed-fb2'
     || name.endsWith('.fb2.zip') || name.endsWith('.fbz')
 
-const makeZipLoader = async file => {
+export const makeZipLoader = async file => {
     const { configure, ZipReader, BlobReader, TextWriter, BlobWriter } =
         await import('./vendor/zip.js')
     configure({ useWebWorkers: false })
@@ -65,9 +65,9 @@ const makeDirectoryLoader = async entry => {
     return { loadText, loadBlob, getSize }
 }
 
-export class ResponseError extends Error {}
-export class NotFoundError extends Error {}
-export class UnsupportedTypeError extends Error {}
+export class ResponseError extends Error { }
+export class NotFoundError extends Error { }
+export class UnsupportedTypeError extends Error { }
 
 const fetchFile = async url => {
     const res = await fetch(url)
@@ -95,8 +95,9 @@ export const makeBook = async file => {
             const { makeFB2 } = await import('./fb2.js')
             const { entries } = loader
             const entry = entries.find(entry => entry.filename.endsWith('.fb2'))
-            const blob = await loader.loadBlob((entry ?? entries[0]).filename)
-            book = await makeFB2(blob)
+            const filename = (entry ?? entries[0]).filename
+            const blob = await loader.loadBlob(filename, 'application/x-fictionbook+xml')
+            book = await makeFB2(new File([blob], filename))
         }
         else {
             const { EPUB } = await import('./epub.js')
@@ -230,8 +231,8 @@ export class View extends HTMLElement {
     }
     async open(book) {
         if (typeof book === 'string'
-        || typeof book.arrayBuffer === 'function'
-        || book.isDirectory) book = await makeBook(book)
+            || typeof book.arrayBuffer === 'function'
+            || book.isDirectory) book = await makeBook(book)
         this.book = book
         this.language = languageInfo(book.metadata?.language)
 
@@ -242,10 +243,12 @@ export class View extends HTMLElement {
             const getFragment = book.getTOCFragment.bind(book)
             this.#tocProgress = new TOCProgress()
             await this.#tocProgress.init({
-                toc: book.toc ?? [], ids, splitHref, getFragment })
+                toc: book.toc ?? [], ids, splitHref, getFragment
+            })
             this.#pageProgress = new TOCProgress()
             await this.#pageProgress.init({
-                toc: book.pageList ?? [], ids, splitHref, getFragment })
+                toc: book.pageList ?? [], ids, splitHref, getFragment
+            })
         }
 
         this.isFixedLayout = this.book.rendition?.layout === 'pre-paginated'
@@ -261,6 +264,57 @@ export class View extends HTMLElement {
         this.renderer.addEventListener('relocate', e => this.#onRelocate(e.detail))
         this.renderer.addEventListener('create-overlayer', e =>
             e.detail.attach(this.#createOverlayer(e.detail)))
+
+        // Centralized click handler for renderer (to handle SVG clicks outside iframes)
+        this.renderer.addEventListener('click', e => {
+            const contents = this.renderer.getContents()
+            for (const { overlayer, index, doc } of contents) {
+                if (!overlayer) continue
+
+                let clientX = e.clientX
+                let clientY = e.clientY
+                const frame = doc?.defaultView?.frameElement
+                if (frame && e.view === doc.defaultView) {
+                    const rect = frame.getBoundingClientRect()
+                    clientX += rect.left
+                    clientY += rect.top
+                }
+
+                const [value, range, rect] = overlayer.hitTest({ clientX, clientY })
+                if (value && !value.startsWith(SEARCH_PREFIX)) {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    e.stopImmediatePropagation()
+                    this.#emit('show-annotation', { value, index, range, rect })
+                    return
+                }
+            }
+        }, true)
+
+        // Centralized mousemove handler for pointer cursor
+        let lastHitTestTime = 0
+        const THROTTLE_MS = 100
+        this.renderer.addEventListener('mousemove', e => {
+            const now = performance.now()
+            if (now - lastHitTestTime < THROTTLE_MS) return
+            lastHitTestTime = now
+
+            const contents = this.renderer.getContents()
+            let hit = false
+            for (const { overlayer, doc } of contents) {
+                if (!overlayer) continue
+                const [value] = overlayer.hitTest(e)
+                if (value && !value.startsWith(SEARCH_PREFIX)) {
+                    if (doc.body?.style) doc.body.style.cursor = 'pointer'
+                    hit = true
+                    break
+                } else {
+                    if (doc.body?.style) doc.body.style.cursor = ''
+                }
+            }
+            if (this.renderer.style) this.renderer.style.cursor = hit ? 'pointer' : ''
+        })
+
         this.renderer.open(book)
         this.#root.append(this.renderer)
 
@@ -364,7 +418,8 @@ export class View extends HTMLElement {
         })
     }
     async addAnnotation(annotation, remove) {
-        const { value } = annotation
+        const { value, id } = annotation
+        const key = id || value
         if (value.startsWith(SEARCH_PREFIX)) {
             const cfi = value.replace(SEARCH_PREFIX, '')
             const { index, anchor } = await this.resolveNavigation(cfi)
@@ -372,11 +427,11 @@ export class View extends HTMLElement {
             if (obj) {
                 const { overlayer, doc } = obj
                 if (remove) {
-                    overlayer.remove(value)
+                    overlayer.remove(key)
                     return
                 }
                 const range = doc ? anchor(doc) : anchor
-                overlayer.add(value, range, Overlayer.outline)
+                overlayer.add(key, range, Overlayer.outline)
             }
             return
         }
@@ -384,10 +439,10 @@ export class View extends HTMLElement {
         const obj = this.#getOverlayer(index)
         if (obj) {
             const { overlayer, doc } = obj
-            overlayer.remove(value)
+            overlayer.remove(key)
             if (!remove) {
                 const range = doc ? anchor(doc) : anchor
-                const draw = (func, opts) => overlayer.add(value, range, func, opts)
+                const draw = (func, opts) => overlayer.add(key, range, func, opts)
                 this.#emit('draw-annotation', { draw, annotation, doc, range })
             }
         }
@@ -403,12 +458,42 @@ export class View extends HTMLElement {
     }
     #createOverlayer({ doc, index }) {
         const overlayer = new Overlayer()
-        doc.addEventListener('click', e => {
-            const [value, range] = overlayer.hitTest(e)
-            if (value && !value.startsWith(SEARCH_PREFIX)) {
-                this.#emit('show-annotation', { value, index, range })
+        const clickHandler = e => {
+            // Convert coordinates if event is from inside iframe
+            let clientX = e.clientX
+            let clientY = e.clientY
+            const frame = doc?.defaultView?.frameElement
+            if (frame && e.view === doc.defaultView) {
+                const rect = frame.getBoundingClientRect()
+                clientX += rect.left
+                clientY += rect.top
             }
-        }, false)
+
+            const [value, range, rect] = overlayer.hitTest({ clientX, clientY })
+            if (value && !value.startsWith(SEARCH_PREFIX)) {
+                e.preventDefault()
+                e.stopPropagation()
+                e.stopImmediatePropagation()
+                this.#emit('show-annotation', { value, index, range, rect })
+            }
+        }
+        doc.addEventListener('click', clickHandler, true)
+
+        // Add mousemove listener for hover detection to show pointer cursor inside iframe
+        let lastHitTestTime = 0
+        const THROTTLE_MS = 100
+        const mouseMoveHandler = e => {
+            const now = performance.now()
+            if (now - lastHitTestTime < THROTTLE_MS) return
+            lastHitTestTime = now
+            const [value] = overlayer.hitTest(e)
+            if (value && !value.startsWith(SEARCH_PREFIX)) {
+                if (doc.body?.style) doc.body.style.cursor = 'pointer'
+            } else {
+                if (doc.body?.style) doc.body.style.cursor = ''
+            }
+        }
+        doc.addEventListener('mousemove', mouseMoveHandler, false)
 
         const list = this.#searchResults.get(index)
         if (list) for (const item of list) this.addAnnotation(item)
@@ -417,13 +502,14 @@ export class View extends HTMLElement {
         return overlayer
     }
     async showAnnotation(annotation) {
-        const { value } = annotation
+        const { value, id } = annotation
+        const key = id || value
         const resolved = await this.goTo(value)
         if (resolved) {
             const { index, anchor } = resolved
-            const { doc } =  this.#getOverlayer(index)
+            const { doc } = this.#getOverlayer(index)
             const range = anchor(doc)
-            this.#emit('show-annotation', { value, index, range })
+            this.#emit('show-annotation', { value: key, index, range })
         }
     }
     getCFI(index, range) {
@@ -461,7 +547,7 @@ export class View extends HTMLElement {
             await this.renderer.goTo(resolved)
             this.history.pushState(target)
             return resolved
-        } catch(e) {
+        } catch (e) {
             console.error(e)
             console.error(`Could not go to ${target}`)
         }
@@ -476,7 +562,7 @@ export class View extends HTMLElement {
             const obj = await this.resolveNavigation(target)
             await this.renderer.goTo({ ...obj, select: true })
             this.history.pushState(target)
-        } catch(e) {
+        } catch (e) {
             console.error(e)
             console.error(`Could not go to ${target}`)
         }
@@ -503,7 +589,7 @@ export class View extends HTMLElement {
             const range = isRange ? frag : doc.createRange()
             if (!isRange) range.selectNodeContents(frag)
             return this.#tocProgress.getProgress(index, range)
-        } catch(e) {
+        } catch (e) {
             console.error(e)
             console.error(`Could not get ${target}`)
         }
@@ -551,7 +637,7 @@ export class View extends HTMLElement {
         this.#searchResults.set(index, list)
 
         for await (const result of iter) {
-            if (result.subitems){
+            if (result.subitems) {
                 const list = result.subitems
                     .map(({ cfi }) => ({ value: SEARCH_PREFIX + cfi }))
                 this.#searchResults.set(result.index, list)

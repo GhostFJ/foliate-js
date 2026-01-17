@@ -9,6 +9,7 @@ export class Overlayer {
             position: 'absolute', top: '0', left: '0',
             width: '100%', height: '100%',
             pointerEvents: 'none',
+            zIndex: '10',
         })
     }
     get element() {
@@ -38,72 +39,150 @@ export class Overlayer {
             obj.rects = rects
         }
     }
-    hitTest({ x, y }) {
+    hitTest({ clientX: x, clientY: y }) {
+        const tolerance = 10
+        const svgRect = this.#svg.getBoundingClientRect()
+        const zoom = svgRect.width / this.#svg.clientWidth || 1
+
+        // 转换为 SVG 内部坐标
+        x = (x - svgRect.left) / zoom
+        y = (y - svgRect.top) / zoom
+
         const arr = Array.from(this.#map.entries())
-        // loop in reverse to hit more recently added items first
         for (let i = arr.length - 1; i >= 0; i--) {
             const [key, obj] = arr[i]
-            for (const { left, top, right, bottom } of obj.rects)
-                if (top <= y && left <= x && bottom > y && right > x)
-                    return [key, obj.range]
+            for (const rect of obj.rects) {
+                const { left, top, right, bottom } = rect
+                if (x >= left - tolerance && x <= right + tolerance && y >= top - tolerance && y <= bottom + tolerance)
+                    return [key, obj.range, rect]
+            }
         }
         return []
     }
+    static #applyAttributes(element, attributes) {
+        if (!attributes) return
+        for (const [key, value] of Object.entries(attributes)) {
+            if (key === 'style' && typeof value === 'string') {
+                element.style.cssText += ';' + value
+            } else {
+                element.setAttribute(key, value)
+            }
+        }
+        if (attributes['data-annotation-id']) {
+            element.setAttribute('pointer-events', 'all')
+            element.setAttribute('cursor', 'pointer')
+            element.style.pointerEvents = 'all'
+            element.style.cursor = 'pointer'
+        }
+    }
     static underline(rects, options = {}) {
-        const { color = 'red', width: strokeWidth = 2, writingMode } = options
+        const { color = 'red', width: strokeWidth = 2, writingMode, attributes } = options
         const g = createSVGElement('g')
         g.setAttribute('fill', color)
-        if (writingMode === 'vertical-rl' || writingMode === 'vertical-lr')
-            for (const { right, top, height } of rects) {
+        Overlayer.#applyAttributes(g, attributes)
+        for (const rect of rects) {
+            const { left, top, width, height, right, bottom } = rect
+            // Add a transparent rect to make the whole area clickable
+            const hitRect = createSVGElement('rect')
+            hitRect.setAttribute('x', left)
+            hitRect.setAttribute('y', top)
+            hitRect.setAttribute('width', width)
+            hitRect.setAttribute('height', height)
+            hitRect.setAttribute('fill', 'white')
+            hitRect.setAttribute('fill-opacity', '0')
+            hitRect.setAttribute('pointer-events', 'all')
+            hitRect.setAttribute('cursor', 'pointer')
+            hitRect.setAttribute('stroke', 'none')
+            if (attributes?.['data-annotation-id']) {
+                hitRect.setAttribute('data-annotation-id', attributes['data-annotation-id'])
+            }
+            g.append(hitRect)
+
+            if (writingMode === 'vertical-rl' || writingMode === 'vertical-lr') {
                 const el = createSVGElement('rect')
                 el.setAttribute('x', right - strokeWidth)
                 el.setAttribute('y', top)
                 el.setAttribute('height', height)
                 el.setAttribute('width', strokeWidth)
                 g.append(el)
+            } else {
+                const el = createSVGElement('rect')
+                el.setAttribute('x', left)
+                el.setAttribute('y', bottom - strokeWidth)
+                el.setAttribute('height', strokeWidth)
+                el.setAttribute('width', width)
+                g.append(el)
             }
-        else for (const { left, bottom, width } of rects) {
-            const el = createSVGElement('rect')
-            el.setAttribute('x', left)
-            el.setAttribute('y', bottom - strokeWidth)
-            el.setAttribute('height', strokeWidth)
-            el.setAttribute('width', width)
-            g.append(el)
         }
         return g
     }
     static strikethrough(rects, options = {}) {
-        const { color = 'red', width: strokeWidth = 2, writingMode } = options
+        const { color = 'red', width: strokeWidth = 2, writingMode, attributes } = options
         const g = createSVGElement('g')
         g.setAttribute('fill', color)
-        if (writingMode === 'vertical-rl' || writingMode === 'vertical-lr')
-            for (const { right, left, top, height } of rects) {
+        Overlayer.#applyAttributes(g, attributes)
+        for (const rect of rects) {
+            const { left, top, width, height, right, bottom } = rect
+            const hitRect = createSVGElement('rect')
+            hitRect.setAttribute('x', left)
+            hitRect.setAttribute('y', top)
+            hitRect.setAttribute('width', width)
+            hitRect.setAttribute('height', height)
+            hitRect.setAttribute('fill', 'white')
+            hitRect.setAttribute('fill-opacity', '0')
+            hitRect.setAttribute('pointer-events', 'all')
+            hitRect.setAttribute('cursor', 'pointer')
+            hitRect.setAttribute('stroke', 'none')
+            if (attributes?.['data-annotation-id']) {
+                hitRect.setAttribute('data-annotation-id', attributes['data-annotation-id'])
+            }
+            g.append(hitRect)
+
+            if (writingMode === 'vertical-rl' || writingMode === 'vertical-lr') {
                 const el = createSVGElement('rect')
                 el.setAttribute('x', (right + left) / 2)
                 el.setAttribute('y', top)
                 el.setAttribute('height', height)
                 el.setAttribute('width', strokeWidth)
                 g.append(el)
+            } else {
+                const el = createSVGElement('rect')
+                el.setAttribute('x', left)
+                el.setAttribute('y', (top + bottom) / 2)
+                el.setAttribute('height', strokeWidth)
+                el.setAttribute('width', width)
+                g.append(el)
             }
-        else for (const { left, top, bottom, width } of rects) {
-            const el = createSVGElement('rect')
-            el.setAttribute('x', left)
-            el.setAttribute('y', (top + bottom) / 2)
-            el.setAttribute('height', strokeWidth)
-            el.setAttribute('width', width)
-            g.append(el)
         }
         return g
     }
     static squiggly(rects, options = {}) {
-        const { color = 'red', width: strokeWidth = 2, writingMode } = options
+        const { color = 'red', width: strokeWidth = 2, writingMode, attributes } = options
         const g = createSVGElement('g')
         g.setAttribute('fill', 'none')
         g.setAttribute('stroke', color)
         g.setAttribute('stroke-width', strokeWidth)
+        Overlayer.#applyAttributes(g, attributes)
         const block = strokeWidth * 1.5
-        if (writingMode === 'vertical-rl' || writingMode === 'vertical-lr')
-            for (const { right, top, height } of rects) {
+        for (const rect of rects) {
+            const { left, top, width, height, right, bottom } = rect
+            // Add a transparent rect to make the whole area clickable
+            const hitRect = createSVGElement('rect')
+            hitRect.setAttribute('x', left)
+            hitRect.setAttribute('y', top)
+            hitRect.setAttribute('width', width)
+            hitRect.setAttribute('height', height)
+            hitRect.setAttribute('fill', 'white')
+            hitRect.setAttribute('fill-opacity', '0')
+            hitRect.setAttribute('pointer-events', 'all')
+            hitRect.setAttribute('cursor', 'pointer')
+            hitRect.setAttribute('stroke', 'none')
+            if (attributes?.['data-annotation-id']) {
+                hitRect.setAttribute('data-annotation-id', attributes['data-annotation-id'])
+            }
+            g.append(hitRect)
+
+            if (writingMode === 'vertical-rl' || writingMode === 'vertical-lr') {
                 const el = createSVGElement('path')
                 const n = Math.round(height / block / 1.5)
                 const inline = height / n
@@ -111,25 +190,82 @@ export class Overlayer {
                     (_, i) => `l${i % 2 ? -block : block} ${inline}`).join('')
                 el.setAttribute('d', `M${right} ${top}${ls}`)
                 g.append(el)
+            } else {
+                const el = createSVGElement('path')
+                const n = Math.round(width / block / 1.5)
+                const inline = width / n
+                const ls = Array.from({ length: n },
+                    (_, i) => `l${inline} ${i % 2 ? block : -block}`).join('')
+                el.setAttribute('d', `M${left} ${bottom}${ls}`)
+                g.append(el)
             }
-        else for (const { left, bottom, width } of rects) {
-            const el = createSVGElement('path')
-            const n = Math.round(width / block / 1.5)
-            const inline = width / n
-            const ls = Array.from({ length: n },
-                (_, i) => `l${inline} ${i % 2 ? block : -block}`).join('')
-            el.setAttribute('d', `M${left} ${bottom}${ls}`)
+        }
+        return g
+    }
+    static dashed(rects, options = {}) {
+        const { color = 'currentColor', width: strokeWidth = 2, writingMode, attributes } = options
+        const g = createSVGElement('g')
+        g.setAttribute('fill', 'none')
+        g.setAttribute('stroke', color)
+        g.setAttribute('stroke-width', strokeWidth)
+        g.setAttribute('stroke-dasharray', `${strokeWidth * 3},${strokeWidth * 2}`)
+        Overlayer.#applyAttributes(g, attributes)
+        for (const rect of rects) {
+            const { left, top, width, height, right, bottom } = rect
+            const hitRect = createSVGElement('rect')
+            hitRect.setAttribute('x', left)
+            hitRect.setAttribute('y', top)
+            hitRect.setAttribute('width', width)
+            hitRect.setAttribute('height', height)
+            hitRect.setAttribute('fill', 'white')
+            hitRect.setAttribute('fill-opacity', '0')
+            hitRect.setAttribute('pointer-events', 'all')
+            hitRect.setAttribute('cursor', 'pointer')
+            hitRect.setAttribute('stroke', 'none')
+            if (attributes?.['data-annotation-id']) {
+                hitRect.setAttribute('data-annotation-id', attributes['data-annotation-id'])
+            }
+            g.append(hitRect)
+
+            const el = createSVGElement('line')
+            if (writingMode === 'vertical-rl' || writingMode === 'vertical-lr') {
+                el.setAttribute('x1', right - strokeWidth)
+                el.setAttribute('y1', top)
+                el.setAttribute('x2', right - strokeWidth)
+                el.setAttribute('y2', bottom)
+            } else {
+                el.setAttribute('x1', left)
+                el.setAttribute('y1', bottom - strokeWidth)
+                el.setAttribute('x2', right)
+                el.setAttribute('y2', bottom - strokeWidth)
+            }
             g.append(el)
         }
         return g
     }
     static highlight(rects, options = {}) {
-        const { color = 'red' } = options
+        const { color = 'red', attributes } = options
         const g = createSVGElement('g')
         g.setAttribute('fill', color)
         g.style.opacity = 'var(--overlayer-highlight-opacity, .3)'
         g.style.mixBlendMode = 'var(--overlayer-highlight-blend-mode, normal)'
+        Overlayer.#applyAttributes(g, attributes)
         for (const { left, top, height, width } of rects) {
+            const hitRect = createSVGElement('rect')
+            hitRect.setAttribute('x', left)
+            hitRect.setAttribute('y', top)
+            hitRect.setAttribute('width', width)
+            hitRect.setAttribute('height', height)
+            hitRect.setAttribute('fill', 'white')
+            hitRect.setAttribute('fill-opacity', '0')
+            hitRect.setAttribute('pointer-events', 'all')
+            hitRect.setAttribute('cursor', 'pointer')
+            hitRect.setAttribute('stroke', 'none')
+            if (attributes?.['data-annotation-id']) {
+                hitRect.setAttribute('data-annotation-id', attributes['data-annotation-id'])
+            }
+            g.append(hitRect)
+
             const el = createSVGElement('rect')
             el.setAttribute('x', left)
             el.setAttribute('y', top)
@@ -140,12 +276,29 @@ export class Overlayer {
         return g
     }
     static outline(rects, options = {}) {
-        const { color = 'red', width: strokeWidth = 3, radius = 3 } = options
+        const { color = 'red', width: strokeWidth = 3, radius = 3, attributes } = options
         const g = createSVGElement('g')
         g.setAttribute('fill', 'none')
         g.setAttribute('stroke', color)
         g.setAttribute('stroke-width', strokeWidth)
-        for (const { left, top, height, width } of rects) {
+        Overlayer.#applyAttributes(g, attributes)
+        for (const rect of rects) {
+            const { left, top, height, width } = rect
+            const hitRect = createSVGElement('rect')
+            hitRect.setAttribute('x', left)
+            hitRect.setAttribute('y', top)
+            hitRect.setAttribute('width', width)
+            hitRect.setAttribute('height', height)
+            hitRect.setAttribute('fill', 'white')
+            hitRect.setAttribute('fill-opacity', '0')
+            hitRect.setAttribute('pointer-events', 'all')
+            hitRect.setAttribute('cursor', 'pointer')
+            hitRect.setAttribute('stroke', 'none')
+            if (attributes?.['data-annotation-id']) {
+                hitRect.setAttribute('data-annotation-id', attributes['data-annotation-id'])
+            }
+            g.append(hitRect)
+
             const el = createSVGElement('rect')
             el.setAttribute('x', left)
             el.setAttribute('y', top)
