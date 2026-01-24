@@ -1,4 +1,5 @@
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
+const isAndroidWebView = typeof navigator !== 'undefined' && /Android.*Version\/[0-9.]+/i.test(navigator.userAgent)
 
 const debounce = (f, wait, immediate) => {
     let timeout
@@ -252,7 +253,23 @@ class View {
     }
     async load(src, data, afterLoad, beforeRender) {
         if (typeof src !== 'string') throw new Error(`${src} is not string`)
-        return new Promise(resolve => {
+
+        let useSrcdoc = false
+        let finalData = data
+        // 针对 Android WebView 的 blob 拦截进行降级
+        if (isAndroidWebView && src.startsWith('blob:')) {
+            try {
+                const response = await fetch(src)
+                const html = await response.text()
+                // 注入 base 标签以确保 iframe 内部的相对路径资源（如图片、字体）能通过 blob 协议加载
+                finalData = html.replace('<head>', `<head><base href="${src}">`)
+                useSrcdoc = true
+            } catch (err) {
+                console.error('Paginator: Failed to fetch blob content for srcdoc fallback', err)
+            }
+        }
+
+        return new Promise((resolve) => {
             this.#iframe.addEventListener('load', () => {
                 const doc = this.document
                 afterLoad?.(doc)
@@ -282,11 +299,15 @@ class View {
 
                 resolve()
             }, { once: true })
-            if (data) {
-                this.#iframe.srcdoc = data
+
+            if (useSrcdoc || data) {
+                this.#iframe.srcdoc = finalData
             } else {
                 this.#iframe.src = src
             }
+
+            this.#iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups'
+            this.#iframe.setAttribute('security', 'restricted')
         })
     }
     render(layout) {
