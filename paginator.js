@@ -329,7 +329,7 @@ class View {
             'height': 'auto',
             'width': 'auto',
             '--page-margin-top': `${vertical ? marginTop * 1.5 : marginTop}px`,
-            '--page-margin-right': `${vertical ? marginRight : marginRight + gap /2}px`,
+            '--page-margin-right': `${vertical ? marginRight : marginRight + gap / 2}px`,
             '--page-margin-bottom': `${vertical ? marginBottom * 1.5 : marginBottom}px`,
             '--page-margin-left': `${vertical ? marginLeft : marginLeft + gap / 2}px`,
             '--available-width': `${Math.trunc(Math.min(window.innerWidth, columnWidth) - marginLeft - marginRight - gap - 60)}`,
@@ -368,7 +368,7 @@ class View {
             // fix glyph clipping in WebKit
             '-webkit-line-box-contain': 'block glyphs replaced',
             '--page-margin-top': `${vertical ? marginTop * 1.5 : marginTop}px`,
-            '--page-margin-right': `${vertical ? marginRight : marginRight / 2 + gap /2}px`,
+            '--page-margin-right': `${vertical ? marginRight : marginRight / 2 + gap / 2}px`,
             '--page-margin-bottom': `${vertical ? marginBottom * 1.5 : marginBottom}px`,
             '--page-margin-left': `${vertical ? marginLeft : marginLeft / 2 + gap / 2}px`,
             '--available-width': `${Math.trunc(columnWidth - marginLeft - marginRight - gap)}`,
@@ -392,9 +392,9 @@ class View {
             setStylesImportant(el, {
                 'max-height': vertical
                     ? (maxHeight !== 'none' && maxHeight !== '0px' ? maxHeight : '100%')
-                    : `${height - marginTop - marginBottom }px`,
+                    : `${height - marginTop - marginBottom}px`,
                 'max-width': vertical
-                    ? `${width - marginLeft - marginRight }px`
+                    ? `${width - marginLeft - marginRight}px`
                     : (maxWidth !== 'none' && maxWidth !== '0px' ? maxWidth : '100%'),
                 'object-fit': 'contain',
                 'page-break-inside': 'avoid',
@@ -474,7 +474,7 @@ class View {
 export class Paginator extends HTMLElement {
     static observedAttributes = [
         'flow', 'gap', 'margin-top', 'margin-bottom', 'margin-left', 'margin-right',
-        'max-inline-size', 'max-block-size', 'max-column-count',
+        'max-inline-size', 'max-block-size', 'max-column-count', 'theme-bg-color', 'theme-fg-color',
     ]
     #root = this.attachShadow({ mode: 'open' })
     #observer = new ResizeObserver(() => this.render())
@@ -507,6 +507,7 @@ export class Paginator extends HTMLElement {
         :host {
             display: block;
             container-type: size;
+            color: var(--theme-fg-color);
         }
         :host, #top {
             box-sizing: border-box;
@@ -704,12 +705,28 @@ export class Paginator extends HTMLElement {
             case 'max-block-size':
             case 'max-column-count':
                 this.#top.style.setProperty('--_' + name, value)
-                this.render()
+                // 使用 requestAnimationFrame 确保布局刷新后再渲染，避免 getBoundingClientRect 获取到旧值
+                if (this._renderFrame) cancelAnimationFrame(this._renderFrame)
+                this._renderFrame = requestAnimationFrame(() => {
+                    this.render()
+                    this._renderFrame = null
+                })
                 break
             case 'max-inline-size':
-                // needs explicit `render()` as it doesn't necessarily resize
                 this.#top.style.setProperty('--_' + name, value)
-                this.render()
+                if (this._renderFrame) cancelAnimationFrame(this._renderFrame)
+                this._renderFrame = requestAnimationFrame(() => {
+                    this.render()
+                    this._renderFrame = null
+                })
+                break
+            case 'theme-bg-color':
+            case 'theme-fg-color':
+                this.style.setProperty('--' + name, value)
+                // 仅更新背景层，不调用 render() 避免重置渲染器状态导致内容消失
+                if (this.#view) {
+                    this.#replaceBackground(this.#view.docBackground, this.columnCount)
+                }
                 break
         }
     }
@@ -744,14 +761,16 @@ export class Paginator extends HTMLElement {
         const doc = this.#view?.document
         if (!doc) return
         const htmlStyle = doc.defaultView.getComputedStyle(doc.documentElement)
-        const themeBgColor = htmlStyle.getPropertyValue('--theme-bg-color')
+        // 优先使用宿主属性值，确保主题切换时的实时性
+        const themeBgColor = this.getAttribute('theme-bg-color') || htmlStyle.getPropertyValue('--theme-bg-color')
         const overrideColor = htmlStyle.getPropertyValue('--override-color') === 'true'
         const bgTextureId = htmlStyle.getPropertyValue('--bg-texture-id')
         const isDarkMode = htmlStyle.getPropertyValue('color-scheme') === 'dark'
         if (background && themeBgColor) {
             const parsedBackground = background.split(/\s(?=(?:url|rgb|hsl|#[0-9a-fA-F]{3,6}))/)
             if ((isDarkMode || overrideColor) && (bgTextureId === 'none' || !bgTextureId)) {
-                parsedBackground[0] = themeBgColor
+                // 使用 CSS 变量，使背景颜色能够随宿主属性实时响应
+                parsedBackground[0] = 'var(--theme-bg-color, ' + themeBgColor + ')'
             }
             background = parsedBackground.join(' ')
         }
